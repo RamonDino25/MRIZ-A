@@ -1,0 +1,398 @@
+"""
+AI Resume Generation Service
+Uses Claude API to generate ATS-optimized resumes
+"""
+import os
+import logging
+from typing import Dict, List, Optional, Any
+from anthropic import Anthropic
+import json
+
+logger = logging.getLogger(__name__)
+
+class AIResumeService:
+    def __init__(self):
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise ValueError("ANTHROPIC_API_KEY environment variable not set")
+        
+        self.client = Anthropic(api_key=api_key)
+        self.model = "claude-sonnet-4-20250514"
+    
+    def generate_resume(
+        self,
+        user_profile: Dict[str, Any],
+        target_position: Optional[str] = None,
+        keywords: Optional[List[str]] = None,
+        format_type: str = "ats_optimized"
+    ) -> Dict[str, Any]:
+        """
+        Generate an ATS-optimized resume based on user profile
+        
+        Args:
+            user_profile: User's profile information
+            target_position: Target job position
+            keywords: Keywords to emphasize
+            format_type: Resume format type
+            
+        Returns:
+            Dict containing generated resume sections
+        """
+        
+        # Build the prompt
+        prompt = self._build_resume_prompt(
+            user_profile=user_profile,
+            target_position=target_position,
+            keywords=keywords,
+            format_type=format_type
+        )
+        
+        try:
+            # Call Claude API
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=4000,
+                temperature=0.7,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ]
+            )
+            
+            # Extract text from response
+            resume_text = response.content[0].text
+            
+            # Parse the response into structured format
+            resume_data = self._parse_resume_response(resume_text)
+            
+            # Calculate ATS score
+            ats_score = self._calculate_ats_score(resume_data, keywords or [])
+            
+            return {
+                "summary": resume_data.get("summary", ""),
+                "experience": resume_data.get("experience", []),
+                "education": resume_data.get("education", []),
+                "skills_section": resume_data.get("skills", []),
+                "projects": resume_data.get("projects", []),
+                "certifications": resume_data.get("certifications", []),
+                "awards": resume_data.get("awards", []),
+                "ats_score": ats_score,
+                "keywords_used": keywords or []
+            }
+            
+        except Exception as e:
+            logger.error(f"Error generating resume: {str(e)}")
+            raise Exception(f"Failed to generate resume: {str(e)}")
+    
+    def _build_resume_prompt(
+        self,
+        user_profile: Dict[str, Any],
+        target_position: Optional[str],
+        keywords: Optional[List[str]],
+        format_type: str
+    ) -> str:
+        """Build the prompt for resume generation"""
+        
+        keywords_str = ", ".join(keywords) if keywords else "relevant industry skills"
+        target_pos = target_position or "entry-level position"
+        
+        prompt = f"""You are an expert resume writer specializing in ATS-optimized resumes for students and recent graduates.
+
+Create a professional, ATS-optimized resume for the following candidate:
+
+**User Profile:**
+- Name: {user_profile.get('name', 'Student')}
+- Academic Level: {user_profile.get('academic_level', 'Student')}
+- Major: {user_profile.get('major', 'N/A')}
+- University: {user_profile.get('university', 'N/A')}
+- Graduation Date: {user_profile.get('graduation_date', 'N/A')}
+- GPA: {user_profile.get('gpa', 'N/A')}
+- Skills: {', '.join(user_profile.get('skills', []))}
+- Interests: {', '.join(user_profile.get('interests', []))}
+
+**Target Position:** {target_pos}
+
+**Key Requirements:**
+1. Create an ATS-friendly format (simple, clean, keyword-optimized)
+2. Emphasize these keywords: {keywords_str}
+3. Use action verbs and quantifiable achievements
+4. Tailor content to {target_pos}
+5. Keep it concise (1 page for students/recent grads)
+
+**Return the resume in the following JSON structure:**
+
+{{
+  "summary": "A compelling 2-3 sentence professional summary",
+  "experience": [
+    {{
+      "company": "Company Name",
+      "position": "Position Title",
+      "start_date": "YYYY-MM",
+      "end_date": "YYYY-MM or Present",
+      "current": false,
+      "description": [
+        "Achievement-focused bullet point with metrics",
+        "Another achievement-focused bullet point"
+      ]
+    }}
+  ],
+  "education": [
+    {{
+      "institution": "University Name",
+      "degree": "Degree Type",
+      "field_of_study": "Major",
+      "start_date": "YYYY-MM",
+      "end_date": "YYYY-MM",
+      "gpa": 3.75,
+      "relevant_coursework": ["Course 1", "Course 2"]
+    }}
+  ],
+  "skills": ["Skill 1", "Skill 2", "Skill 3"],
+  "projects": [
+    {{
+      "name": "Project Name",
+      "description": "Brief project description",
+      "technologies": ["Tech 1", "Tech 2"],
+      "url": "github.com/...",
+      "highlights": [
+        "Key achievement or feature",
+        "Impact or result"
+      ]
+    }}
+  ],
+  "certifications": ["Certification 1", "Certification 2"],
+  "awards": ["Award 1", "Award 2"]
+}}
+
+**Important Guidelines:**
+- Use ONLY verifiable information from the user profile
+- If information is missing, use reasonable placeholders
+- Focus on achievements, not just responsibilities
+- Include metrics and numbers where possible
+- Ensure ALL keywords are naturally incorporated
+- Use past tense for previous positions, present tense for current
+
+Generate the resume now in valid JSON format:"""
+        
+        return prompt
+    
+    def _parse_resume_response(self, response_text: str) -> Dict[str, Any]:
+        """Parse Claude's response into structured format"""
+        
+        try:
+            # Try to extract JSON from the response
+            # Claude might wrap it in markdown code blocks
+            if "```json" in response_text:
+                json_start = response_text.find("```json") + 7
+                json_end = response_text.rfind("```")
+                json_text = response_text[json_start:json_end].strip()
+            elif "```" in response_text:
+                json_start = response_text.find("```") + 3
+                json_end = response_text.rfind("```")
+                json_text = response_text[json_start:json_end].strip()
+            else:
+                json_text = response_text.strip()
+            
+            # Parse JSON
+            resume_data = json.loads(json_text)
+            return resume_data
+            
+        except json.JSONDecodeError:
+            # Fallback: return a structured error response
+            logger.warning(f"Failed to parse resume JSON. Response: {response_text[:200]}")
+            return {
+                "summary": "Failed to generate summary. Please try again.",
+                "experience": [],
+                "education": [],
+                "skills": [],
+                "projects": [],
+                "certifications": [],
+                "awards": []
+            }
+    
+    def _calculate_ats_score(self, resume_data: Dict[str, Any], keywords: List[str]) -> int:
+        """
+        Calculate ATS score based on resume content and keywords
+        
+        Returns:
+            Score from 0-100
+        """
+        score = 0
+        
+        # Check for required sections (50 points total)
+        if resume_data.get("summary"):
+            score += 10
+        if resume_data.get("experience"):
+            score += 15
+        if resume_data.get("education"):
+            score += 15
+        if resume_data.get("skills"):
+            score += 10
+        
+        # Check for keyword inclusion (50 points total)
+        if keywords:
+            resume_text = json.dumps(resume_data).lower()
+            keywords_found = sum(1 for kw in keywords if kw.lower() in resume_text)
+            keyword_percentage = keywords_found / len(keywords) if keywords else 0
+            score += int(keyword_percentage * 50)
+        else:
+            score += 25  # Default bonus if no specific keywords
+        
+        # Bonus points for optional sections
+        if resume_data.get("projects"):
+            score = min(100, score + 5)
+        if resume_data.get("certifications"):
+            score = min(100, score + 3)
+        if resume_data.get("awards"):
+            score = min(100, score + 2)
+        
+        return min(100, score)
+    
+    def optimize_resume(
+        self,
+        current_resume: Dict[str, Any],
+        job_description: str,
+        target_keywords: List[str]
+    ) -> Dict[str, Any]:
+        """
+        Optimize an existing resume for a specific job
+        
+        Args:
+            current_resume: Current resume content
+            job_description: Target job description
+            target_keywords: Keywords to optimize for
+            
+        Returns:
+            Optimized resume with suggestions
+        """
+        
+        prompt = f"""You are an expert ATS resume optimizer. Analyze this resume and optimize it for the following job:
+
+**Current Resume:**
+{json.dumps(current_resume, indent=2)}
+
+**Target Job Description:**
+{job_description}
+
+**Required Keywords:**
+{', '.join(target_keywords)}
+
+**Task:**
+1. Identify gaps between resume and job requirements
+2. Suggest specific improvements for each section
+3. Recommend keyword placement
+4. Provide an optimized version
+
+Return your response in this JSON format:
+{{
+  "ats_score": 85,
+  "keyword_analysis": {{
+    "missing_keywords": ["keyword1", "keyword2"],
+    "well_placed_keywords": ["keyword3", "keyword4"]
+  }},
+  "suggestions": [
+    "Specific suggestion 1",
+    "Specific suggestion 2"
+  ],
+  "optimized_summary": "Enhanced professional summary...",
+  "optimized_experience": [
+    {{
+      "company": "...",
+      "position": "...",
+      "description": ["Improved bullet 1", "Improved bullet 2"]
+    }}
+  ]
+}}"""
+        
+        try:
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=3000,
+                temperature=0.5,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            
+            response_text = response.content[0].text
+            
+            # Parse response
+            if "```json" in response_text:
+                json_start = response_text.find("```json") + 7
+                json_end = response_text.rfind("```")
+                json_text = response_text[json_start:json_end].strip()
+            else:
+                json_text = response_text.strip()
+            
+            optimization = json.loads(json_text)
+            return optimization
+            
+        except Exception as e:
+            logger.error(f"Error optimizing resume: {str(e)}")
+            raise Exception(f"Failed to optimize resume: {str(e)}")
+    
+    def generate_bullet_points(
+        self,
+        role: str,
+        company: str,
+        responsibilities: List[str]
+    ) -> List[str]:
+        """
+        Generate achievement-focused bullet points for a role
+        
+        Args:
+            role: Job role/position
+            company: Company name
+            responsibilities: Basic responsibilities
+            
+        Returns:
+            List of enhanced bullet points
+        """
+        
+        prompt = f"""Generate 3-5 ATS-optimized, achievement-focused bullet points for this role:
+
+Role: {role}
+Company: {company}
+Responsibilities: {', '.join(responsibilities)}
+
+Guidelines:
+- Start with strong action verbs
+- Include metrics and quantifiable results
+- Use past tense
+- Focus on impact and achievements, not just duties
+- Keep each bullet to 1-2 lines
+- Make them ATS-friendly (simple language, no special characters)
+
+Return ONLY a JSON array of bullet points:
+["Bullet point 1", "Bullet point 2", "Bullet point 3"]"""
+        
+        try:
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=1000,
+                temperature=0.7,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            
+            response_text = response.content[0].text.strip()
+            
+            # Extract JSON array
+            if "```json" in response_text:
+                json_start = response_text.find("```json") + 7
+                json_end = response_text.rfind("```")
+                response_text = response_text[json_start:json_end].strip()
+            elif "```" in response_text:
+                json_start = response_text.find("```") + 3
+                json_end = response_text.rfind("```")
+                response_text = response_text[json_start:json_end].strip()
+            
+            bullets = json.loads(response_text)
+            return bullets if isinstance(bullets, list) else []
+            
+        except Exception as e:
+            logger.error(f"Error generating bullet points: {str(e)}")
+            return [
+                "Contributed to team projects and initiatives",
+                "Collaborated with cross-functional teams",
+                "Delivered results in fast-paced environment"
+            ]
