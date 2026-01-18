@@ -1,0 +1,1265 @@
+"""
+AI Career Coach Backend - Main Application
+FastAPI backend with complete endpoints for all 7 workflow steps
+"""
+import os
+from datetime import datetime, timedelta
+from typing import List, Optional
+import logging
+
+from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from sqlalchemy.orm import Session
+from passlib.context import CryptContext
+from jose import JWTError, jwt
+from dotenv import load_dotenv
+
+# Import models and schemas
+from models.database import (
+    Base, engine, get_db, init_db,
+    User, Resume, CoverLetter, Job, Application, Interview,
+    ApplicationStatus, ResumeFormat, InterviewType
+)
+from models.schemas import (
+    UserCreate, UserLogin, UserProfileUpdate, UserResponse,
+    ResumeCreate, ResumeResponse, ResumeGenerateRequest,
+    CoverLetterCreate, CoverLetterResponse,
+    JobCreate, JobResponse, JobSearchRequest,
+    ApplicationCreate, ApplicationUpdate, ApplicationResponse,
+    InterviewCreate, InterviewPrepareRequest, InterviewResponse,
+    AnalyticsDashboard, Token, MessageResponse, ErrorResponse
+)
+
+# Import AI services
+from services.ai_resume_service import AIResumeService
+from services.ai_cover_letter_service import AICoverLetterService
+from services.ai_interview_service import AIInterviewService
+
+# Load environment variables
+load_dotenv()
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# ============================================================================
+# SECURITY CONFIGURATION
+# ============================================================================
+
+# Password hashing
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# JWT configuration
+SECRET_KEY = os.getenv("JWT_SECRET_KEY", "your-secret-key-change-in-production")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30 * 24 * 60  # 30 days
+
+# Security check: warn about default secret key
+if SECRET_KEY == "your-secret-key-change-in-production":
+    logger.warning("⚠️  WARNING: Using default JWT_SECRET_KEY! Change this in production!")
+    logger.warning("⚠️  Generate secure key with: openssl rand -hex 32")
+
+# OAuth2 scheme
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify a password against its hash"""
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_password_hash(password: str) -> str:
+    """Hash a password"""
+    return pwd_context.hash(password)
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    """Create a JWT access token"""
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=15)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+async def get_current_user(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+) -> User:
+    """Get current authenticated user"""
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        email: str = payload.get("sub")
+        if email is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+    
+    user = db.query(User).filter(User.email == email).first()
+    if user is None:
+        raise credentials_exception
+    return user
+
+# ============================================================================
+# FASTAPI APPLICATION SETUP
+# ============================================================================
+
+app = FastAPI(
+    title="AI Career Coach API",
+    description="Complete backend API for AI-powered career coaching and internship advisor",
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc"
+)
+
+# CORS middleware
+# WARNING: In production, restrict allow_origins to your actual frontend domain
+# and limit allow_methods/allow_headers as needed
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:3001",
+        os.getenv("FRONTEND_URL", "http://localhost:3000")
+    ],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],  # Explicitly list methods
+    allow_headers=["*"],
+)
+
+# Initialize database
+@app.on_event("startup")
+async def startup_event():
+    """Initialize database on startup"""
+    init_db()
+    logger.info("✅ Database initialized successfully")
+    logger.info("🚀 AI Career Coach Backend Started")
+    logger.info(f"📚 API Documentation: http://localhost:8000/docs")
+
+# ============================================================================
+# HEALTH CHECK
+# ============================================================================
+
+@app.get("/health", tags=["System"])
+async def health_check():
+    """Health check endpoint"""
+    return {
+        "status": "healthy",
+        "timestamp": datetime.utcnow().isoformat(),
+        "service": "AI Career Coach API",
+        "version": "1.0.0"
+    }
+
+# ============================================================================
+# AUTHENTICATION ENDPOINTS
+# ============================================================================
+
+@app.post("/api/v1/auth/register", response_model=UserResponse, tags=["Authentication"])
+async def register(user_data: UserCreate, db: Session = Depends(get_db)):
+    """Register a new user"""
+    
+    # Check if user already exists
+    existing_user = db.query(User).filter(User.email == user_data.email).first()
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already registered"
+        )
+    
+    # Create new user
+    hashed_password = get_password_hash(user_data.password)
+    new_user = User(
+        email=user_data.email,
+        name=user_data.name,
+        hashed_password=hashed_password,
+        is_active=True
+    )
+    
+    try:
+        db.add(new_user)
+        db.commit()
+        db.refresh(new_user)
+        logger.info(f"New user registered: {new_user.email}")
+        return new_user
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error registering user: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create user account. Please try again."
+        )
+
+@app.post("/api/v1/auth/login", response_model=Token, tags=["Authentication"])
+async def login(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db)
+):
+    """Login and get access token"""
+    
+    # Find user
+    user = db.query(User).filter(User.email == form_data.username).first()
+    if not user or not verify_password(form_data.password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    # Check if user is active
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account is disabled. Please contact support."
+        )
+    
+    # Update last login
+    user.last_login = datetime.utcnow()
+    db.commit()
+    
+    # Create access token
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user.email}, expires_delta=access_token_expires
+    )
+    
+    logger.info(f"User logged in: {user.email}")
+    return {"access_token": access_token, "token_type": "bearer"}
+
+@app.get("/api/v1/auth/me", response_model=UserResponse, tags=["Authentication"])
+async def get_current_user_info(current_user: User = Depends(get_current_user)):
+    """Get current user information"""
+    return current_user
+
+# ============================================================================
+# USER PROFILE ENDPOINTS (STEP 1: User Profiling & Assessment)
+# ============================================================================
+
+@app.get("/api/v1/users/profile", response_model=UserResponse, tags=["User Profile"])
+async def get_user_profile(current_user: User = Depends(get_current_user)):
+    """Get user profile"""
+    return current_user
+
+@app.put("/api/v1/users/profile", response_model=UserResponse, tags=["User Profile"])
+async def update_user_profile(
+    profile_update: UserProfileUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Update user profile"""
+    
+    # Update fields
+    update_data = profile_update.dict(exclude_unset=True)
+    for field, value in update_data.items():
+        setattr(current_user, field, value)
+    
+    # Calculate profile completeness
+    completeness = 0
+    total_fields = 14
+    filled_fields = 0
+    
+    check_fields = [
+        'name', 'phone', 'location', 'academic_level', 'major',
+        'university', 'graduation_date', 'gpa', 'skills', 'interests',
+        'linkedin_url', 'github_url', 'portfolio_url', 'minor'
+    ]
+    
+    for field in check_fields:
+        value = getattr(current_user, field)
+        if value:
+            if isinstance(value, list) and len(value) > 0:
+                filled_fields += 1
+            elif isinstance(value, str) and value.strip():
+                filled_fields += 1
+            elif isinstance(value, (int, float)) and value > 0:
+                filled_fields += 1
+    
+    completeness = int((filled_fields / total_fields) * 100)
+    current_user.profile_completeness = completeness
+    current_user.updated_at = datetime.utcnow()
+    
+    db.commit()
+    db.refresh(current_user)
+    
+    logger.info(f"Profile updated: {current_user.email} (Completeness: {completeness}%)")
+    return current_user
+
+@app.get("/api/v1/users/profile/assessment", tags=["User Profile"])
+async def get_profile_assessment(current_user: User = Depends(get_current_user)):
+    """Get career readiness assessment based on profile"""
+    
+    # Calculate various scores
+    profile_score = current_user.profile_completeness
+    
+    # Check if user has key career assets
+    has_resume = len(current_user.resumes) > 0
+    has_applications = len(current_user.applications) > 0
+    skills_count = len(current_user.skills) if current_user.skills else 0
+    
+    # Career readiness score
+    readiness_factors = {
+        "profile_complete": profile_score >= 80,
+        "has_resume": has_resume,
+        "has_skills": skills_count >= 5,
+        "has_applications": has_applications,
+        "gpa_competitive": current_user.gpa and current_user.gpa >= 3.0
+    }
+    
+    readiness_score = sum(readiness_factors.values()) / len(readiness_factors) * 100
+    
+    # Generate next steps
+    next_steps = []
+    if profile_score < 80:
+        next_steps.append("Complete your profile to 80% or higher")
+    if not has_resume:
+        next_steps.append("Create your first ATS-optimized resume")
+    if skills_count < 5:
+        next_steps.append("Add at least 5 relevant skills to your profile")
+    if not has_applications:
+        next_steps.append("Start applying to internships")
+    
+    if not next_steps:
+        next_steps.append("Great job! Continue applying and preparing for interviews")
+    
+    return {
+        "profile_completeness": profile_score,
+        "career_readiness_score": int(readiness_score),
+        "readiness_factors": readiness_factors,
+        "statistics": {
+            "total_resumes": len(current_user.resumes),
+            "total_applications": len(current_user.applications),
+            "total_interviews": len(current_user.interviews),
+            "skills_count": skills_count
+        },
+        "next_steps": next_steps,
+        "suggestions": [
+            "Keep your profile updated with new skills and experiences",
+            "Aim for at least 10 quality applications per week",
+            "Practice interview questions regularly"
+        ]
+    }
+
+# ============================================================================
+# RESUME ENDPOINTS (STEP 2: Resume/CV Optimization)
+# ============================================================================
+
+# Initialize AI service (will be created on first use)
+_resume_service = None
+
+def get_resume_service():
+    global _resume_service
+    if _resume_service is None:
+        try:
+            _resume_service = AIResumeService()
+        except ValueError as e:
+            logger.error(f"Failed to initialize AI Resume Service: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="AI service not configured. Please contact administrator."
+            )
+    return _resume_service
+
+@app.post("/api/v1/resumes/generate", response_model=ResumeResponse, tags=["Resumes"])
+async def generate_resume(
+    request: ResumeGenerateRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Generate an ATS-optimized resume using AI (STEP 2)"""
+    
+    try:
+        # Get AI service
+        ai_service = get_resume_service()
+        
+        # Prepare user profile
+        user_profile = {
+            "name": current_user.name,
+            "email": current_user.email,
+            "phone": current_user.phone,
+            "location": current_user.location,
+            "academic_level": current_user.academic_level.value if current_user.academic_level else None,
+            "major": current_user.major,
+            "minor": current_user.minor,
+            "university": current_user.university,
+            "graduation_date": current_user.graduation_date,
+            "gpa": current_user.gpa,
+            "skills": current_user.skills or [],
+            "interests": current_user.interests or [],
+            "linkedin_url": current_user.linkedin_url,
+            "github_url": current_user.github_url,
+            "portfolio_url": current_user.portfolio_url
+        }
+        
+        # Generate resume
+        resume_data = ai_service.generate_resume(
+            user_profile=user_profile,
+            target_position=request.target_position,
+            keywords=request.keywords,
+            format_type=request.format_type.value
+        )
+        
+        # Create resume in database
+        title = request.target_position or "My Resume"
+        new_resume = Resume(
+            user_id=current_user.id,
+            title=f"{title} - {datetime.utcnow().strftime('%Y-%m-%d')}",
+            format_type=request.format_type,
+            summary=resume_data.get("summary"),
+            experience=resume_data.get("experience", []),
+            education=resume_data.get("education", []),
+            skills_section=resume_data.get("skills_section", []),
+            projects=resume_data.get("projects", []),
+            certifications=resume_data.get("certifications", []),
+            awards=resume_data.get("awards", []),
+            ats_score=resume_data.get("ats_score"),
+            keywords_used=resume_data.get("keywords_used", []),
+            is_primary=len(current_user.resumes) == 0  # First resume is primary
+        )
+        
+        db.add(new_resume)
+        db.commit()
+        db.refresh(new_resume)
+        
+        logger.info(f"Resume generated for user {current_user.email}: {new_resume.id}")
+        return new_resume
+        
+    except Exception as e:
+        logger.error(f"Error generating resume: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate resume: {str(e)}"
+        )
+
+@app.get("/api/v1/resumes", response_model=List[ResumeResponse], tags=["Resumes"])
+async def list_resumes(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """List all user resumes"""
+    resumes = db.query(Resume).filter(
+        Resume.user_id == current_user.id,
+        Resume.is_active == True
+    ).order_by(Resume.created_at.desc()).all()
+    
+    return resumes
+
+@app.get("/api/v1/resumes/{resume_id}", response_model=ResumeResponse, tags=["Resumes"])
+async def get_resume(
+    resume_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get a specific resume"""
+    resume = db.query(Resume).filter(
+        Resume.id == resume_id,
+        Resume.user_id == current_user.id
+    ).first()
+    
+    if not resume:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Resume not found"
+        )
+    
+    return resume
+
+@app.delete("/api/v1/resumes/{resume_id}", response_model=MessageResponse, tags=["Resumes"])
+async def delete_resume(
+    resume_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Delete a resume"""
+    resume = db.query(Resume).filter(
+        Resume.id == resume_id,
+        Resume.user_id == current_user.id
+    ).first()
+    
+    if not resume:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Resume not found"
+        )
+    
+    resume.is_active = False
+    db.commit()
+    
+    logger.info(f"Resume deleted: {resume_id}")
+    return MessageResponse(message="Resume deleted successfully")
+
+@app.post("/api/v1/resumes/{resume_id}/set-primary", response_model=MessageResponse, tags=["Resumes"])
+async def set_primary_resume(
+    resume_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Set a resume as primary"""
+    resume = db.query(Resume).filter(
+        Resume.id == resume_id,
+        Resume.user_id == current_user.id
+    ).first()
+    
+    if not resume:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Resume not found"
+        )
+    
+    # Unset other primary resumes
+    db.query(Resume).filter(
+        Resume.user_id == current_user.id,
+        Resume.is_primary == True
+    ).update({"is_primary": False})
+    
+    resume.is_primary = True
+    db.commit()
+    
+    return MessageResponse(message="Primary resume updated")
+
+# ============================================================================
+# COVER LETTER ENDPOINTS (STEP 4: Cover Letter Generation)
+# ============================================================================
+
+_cover_letter_service = None
+
+def get_cover_letter_service():
+    global _cover_letter_service
+    if _cover_letter_service is None:
+        try:
+            _cover_letter_service = AICoverLetterService()
+        except ValueError as e:
+            logger.error(f"Failed to initialize AI Cover Letter Service: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="AI service not configured. Please contact administrator."
+            )
+    return _cover_letter_service
+
+@app.post("/api/v1/cover-letters/generate", response_model=CoverLetterResponse, tags=["Cover Letters"])
+async def generate_cover_letter(
+    request: CoverLetterCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Generate a personalized cover letter using AI (STEP 4)"""
+    
+    try:
+        # Get AI service
+        ai_service = get_cover_letter_service()
+        
+        # Prepare user profile
+        user_profile = {
+            "name": current_user.name,
+            "email": current_user.email,
+            "phone": current_user.phone,
+            "location": current_user.location,
+            "academic_level": current_user.academic_level.value if current_user.academic_level else None,
+            "major": current_user.major,
+            "university": current_user.university,
+            "graduation_date": current_user.graduation_date,
+            "gpa": current_user.gpa,
+            "skills": current_user.skills or [],
+            "interests": current_user.interests or []
+        }
+        
+        # Generate cover letter
+        cover_letter_text = ai_service.generate_cover_letter(
+            user_profile=user_profile,
+            company_name=request.company_name,
+            position_title=request.position_title,
+            job_description=request.job_description,
+            tone=request.tone,
+            custom_points=request.custom_points
+        )
+        
+        # Create cover letter in database
+        new_cover_letter = CoverLetter(
+            user_id=current_user.id,
+            title=f"{request.company_name} - {request.position_title}",
+            company_name=request.company_name,
+            position_title=request.position_title,
+            content=cover_letter_text,
+            tone=request.tone,
+            word_count=len(cover_letter_text.split()),
+            ai_generated=True
+        )
+        
+        db.add(new_cover_letter)
+        db.commit()
+        db.refresh(new_cover_letter)
+        
+        logger.info(f"Cover letter generated for user {current_user.email}: {new_cover_letter.id}")
+        return new_cover_letter
+        
+    except Exception as e:
+        logger.error(f"Error generating cover letter: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate cover letter: {str(e)}"
+        )
+
+@app.get("/api/v1/cover-letters", response_model=List[CoverLetterResponse], tags=["Cover Letters"])
+async def list_cover_letters(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """List all user cover letters"""
+    cover_letters = db.query(CoverLetter).filter(
+        CoverLetter.user_id == current_user.id
+    ).order_by(CoverLetter.created_at.desc()).all()
+    
+    return cover_letters
+
+@app.get("/api/v1/cover-letters/{cover_letter_id}", response_model=CoverLetterResponse, tags=["Cover Letters"])
+async def get_cover_letter(
+    cover_letter_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get a specific cover letter"""
+    cover_letter = db.query(CoverLetter).filter(
+        CoverLetter.id == cover_letter_id,
+        CoverLetter.user_id == current_user.id
+    ).first()
+    
+    if not cover_letter:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Cover letter not found"
+        )
+    
+    return cover_letter
+
+@app.delete("/api/v1/cover-letters/{cover_letter_id}", response_model=MessageResponse, tags=["Cover Letters"])
+async def delete_cover_letter(
+    cover_letter_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Delete a cover letter"""
+    cover_letter = db.query(CoverLetter).filter(
+        CoverLetter.id == cover_letter_id,
+        CoverLetter.user_id == current_user.id
+    ).first()
+    
+    if not cover_letter:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Cover letter not found"
+        )
+    
+    db.delete(cover_letter)
+    db.commit()
+    
+    logger.info(f"Cover letter deleted: {cover_letter_id}")
+    return MessageResponse(message="Cover letter deleted successfully")
+
+# ============================================================================
+# JOB ENDPOINTS (STEP 3: Opportunity Discovery)
+# ============================================================================
+
+# Sample jobs database (in production, this would be scraped from job boards)
+SAMPLE_JOBS = [
+    {
+        "title": "Software Engineer Intern",
+        "company_name": "Google",
+        "location": "Mountain View, CA",
+        "remote": False,
+        "job_type": "Internship",
+        "description": "Join Google's engineering team for a summer internship...",
+        "requirements": ["Python", "Data Structures", "Algorithms", "Computer Science"],
+        "responsibilities": ["Build scalable systems", "Collaborate with teams"],
+        "salary_min": 7000,
+        "salary_max": 9000,
+        "application_url": "https://careers.google.com/jobs/123",
+        "industry": "Technology"
+    },
+    {
+        "title": "Data Science Intern",
+        "company_name": "Meta",
+        "location": "Menlo Park, CA",
+        "remote": True,
+        "job_type": "Internship",
+        "description": "Work on cutting-edge ML projects at Meta...",
+        "requirements": ["Python", "Machine Learning", "Statistics", "SQL"],
+        "responsibilities": ["Analyze data", "Build ML models"],
+        "salary_min": 8000,
+        "salary_max": 10000,
+        "application_url": "https://www.metacareers.com/jobs/456",
+        "industry": "Technology"
+    },
+    {
+        "title": "Product Management Intern",
+        "company_name": "Amazon",
+        "location": "Seattle, WA",
+        "remote": False,
+        "job_type": "Internship",
+        "description": "Drive product strategy for AWS...",
+        "requirements": ["Product Management", "Communication", "Analysis"],
+        "responsibilities": ["Define product roadmap", "Work with engineering"],
+        "salary_min": 6500,
+        "salary_max": 8500,
+        "application_url": "https://amazon.jobs/en/jobs/789",
+        "industry": "Technology"
+    }
+]
+
+@app.get("/api/v1/jobs/search", response_model=List[JobResponse], tags=["Jobs"])
+async def search_jobs(
+    keywords: Optional[str] = None,
+    location: Optional[str] = None,
+    remote: Optional[bool] = None,
+    job_type: Optional[str] = None,
+    limit: int = 10,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Search for job opportunities (STEP 3)"""
+    
+    # Query jobs from database
+    query = db.query(Job).filter(Job.is_active == True)
+    
+    if keywords:
+        query = query.filter(
+            (Job.title.contains(keywords)) |
+            (Job.description.contains(keywords)) |
+            (Job.company_name.contains(keywords))
+        )
+    
+    if location:
+        query = query.filter(Job.location.contains(location))
+    
+    if remote is not None:
+        query = query.filter(Job.remote == remote)
+    
+    if job_type:
+        query = query.filter(Job.job_type == job_type)
+    
+    jobs = query.limit(limit).all()
+    
+    # If no jobs in database, add sample jobs once
+    if not jobs:
+        # Check if sample jobs were already added
+        existing_sample = db.query(Job).filter(Job.source == "sample_data").first()
+        
+        if not existing_sample:
+            # Add sample jobs to database on first search
+            for job_data in SAMPLE_JOBS[:limit]:
+                job_data_copy = job_data.copy()
+                job_data_copy['source'] = 'sample_data'  # Mark as sample data
+                job = Job(**job_data_copy)
+                db.add(job)
+            db.commit()
+            logger.info(f"Added {len(SAMPLE_JOBS[:limit])} sample jobs to database")
+        
+        # Query again
+        jobs = query.limit(limit).all()
+    
+    return jobs
+
+@app.post("/api/v1/jobs", response_model=JobResponse, tags=["Jobs"])
+async def create_job(
+    job_data: JobCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Create a new job posting (admin/scraper use)"""
+    
+    new_job = Job(**job_data.dict())
+    db.add(new_job)
+    db.commit()
+    db.refresh(new_job)
+    
+    logger.info(f"Job created: {new_job.id}")
+    return new_job
+
+@app.get("/api/v1/jobs/{job_id}", response_model=JobResponse, tags=["Jobs"])
+async def get_job(
+    job_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get a specific job"""
+    job = db.query(Job).filter(Job.id == job_id).first()
+    
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Job not found"
+        )
+    
+    return job
+
+@app.get("/api/v1/jobs/{job_id}/match-score", tags=["Jobs"])
+async def calculate_match_score(
+    job_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Calculate how well a job matches user profile"""
+    
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Job not found"
+        )
+    
+    # Calculate match score
+    user_skills = set([s.lower() for s in (current_user.skills or [])])
+    job_requirements = set([r.lower() for r in (job.requirements or [])])
+    
+    if not job_requirements:
+        match_score = 50  # Default if no requirements
+    else:
+        matching_skills = user_skills.intersection(job_requirements)
+        match_score = int((len(matching_skills) / len(job_requirements)) * 100)
+    
+    # Bonus for location match
+    if current_user.location and job.location:
+        if current_user.location.lower() in job.location.lower():
+            match_score = min(100, match_score + 10)
+    
+    # Bonus for remote if user prefers it
+    if job.remote:
+        match_score = min(100, match_score + 5)
+    
+    return {
+        "job_id": job_id,
+        "match_score": match_score,
+        "matching_skills": list(user_skills.intersection(job_requirements)),
+        "missing_skills": list(job_requirements - user_skills),
+        "recommendation": "Strong match" if match_score >= 70 else "Good match" if match_score >= 50 else "Consider building skills"
+    }
+
+# ============================================================================
+# APPLICATION ENDPOINTS (STEP 5: Application Tracking)
+# ============================================================================
+
+@app.post("/api/v1/applications", response_model=ApplicationResponse, tags=["Applications"])
+async def create_application(
+    app_data: ApplicationCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Create a new job application (STEP 5)"""
+    
+    # Verify job exists
+    job = db.query(Job).filter(Job.id == app_data.job_id).first()
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Job not found"
+        )
+    
+    # Verify resume exists if provided
+    if app_data.resume_id:
+        resume = db.query(Resume).filter(
+            Resume.id == app_data.resume_id,
+            Resume.user_id == current_user.id
+        ).first()
+        if not resume:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Resume not found"
+            )
+    
+    # Verify cover letter exists if provided
+    if app_data.cover_letter_id:
+        cover_letter = db.query(CoverLetter).filter(
+            CoverLetter.id == app_data.cover_letter_id,
+            CoverLetter.user_id == current_user.id
+        ).first()
+        if not cover_letter:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Cover letter not found"
+            )
+    
+    # Calculate match score
+    user_skills = set([s.lower() for s in (current_user.skills or [])])
+    job_requirements = set([r.lower() for r in (job.requirements or [])])
+    match_score = int((len(user_skills.intersection(job_requirements)) / len(job_requirements)) * 100) if job_requirements else 50
+    
+    # Create application
+    new_application = Application(
+        user_id=current_user.id,
+        job_id=app_data.job_id,
+        resume_id=app_data.resume_id,
+        cover_letter_id=app_data.cover_letter_id,
+        notes=app_data.notes,
+        priority=app_data.priority,
+        match_score=match_score,
+        status=ApplicationStatus.DRAFT
+    )
+    
+    db.add(new_application)
+    db.commit()
+    db.refresh(new_application)
+    
+    logger.info(f"Application created for user {current_user.email}: {new_application.id}")
+    return new_application
+
+@app.get("/api/v1/applications", response_model=List[ApplicationResponse], tags=["Applications"])
+async def list_applications(
+    status: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """List all user applications"""
+    query = db.query(Application).filter(Application.user_id == current_user.id)
+    
+    if status:
+        try:
+            status_enum = ApplicationStatus(status)
+            query = query.filter(Application.status == status_enum)
+        except ValueError:
+            pass
+    
+    applications = query.order_by(Application.created_at.desc()).all()
+    return applications
+
+@app.get("/api/v1/applications/{application_id}", response_model=ApplicationResponse, tags=["Applications"])
+async def get_application(
+    application_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get a specific application"""
+    application = db.query(Application).filter(
+        Application.id == application_id,
+        Application.user_id == current_user.id
+    ).first()
+    
+    if not application:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Application not found"
+        )
+    
+    return application
+
+@app.put("/api/v1/applications/{application_id}", response_model=ApplicationResponse, tags=["Applications"])
+async def update_application(
+    application_id: int,
+    app_update: ApplicationUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Update an application"""
+    application = db.query(Application).filter(
+        Application.id == application_id,
+        Application.user_id == current_user.id
+    ).first()
+    
+    if not application:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Application not found"
+        )
+    
+    # Update fields
+    update_data = app_update.dict(exclude_unset=True)
+    for field, value in update_data.items():
+        setattr(application, field, value)
+    
+    # Update timestamps
+    if "status" in update_data:
+        application.last_status_change = datetime.utcnow()
+        if update_data["status"] == ApplicationStatus.APPLIED:
+            application.applied_date = datetime.utcnow()
+    
+    application.updated_at = datetime.utcnow()
+    
+    db.commit()
+    db.refresh(application)
+    
+    logger.info(f"Application updated: {application_id}")
+    return application
+
+@app.delete("/api/v1/applications/{application_id}", response_model=MessageResponse, tags=["Applications"])
+async def delete_application(
+    application_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Delete an application"""
+    application = db.query(Application).filter(
+        Application.id == application_id,
+        Application.user_id == current_user.id
+    ).first()
+    
+    if not application:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Application not found"
+        )
+    
+    db.delete(application)
+    db.commit()
+    
+    logger.info(f"Application deleted: {application_id}")
+    return MessageResponse(message="Application deleted successfully")
+
+# ============================================================================
+# INTERVIEW ENDPOINTS (STEP 6: Interview Preparation)
+# ============================================================================
+
+_interview_service = None
+
+def get_interview_service():
+    global _interview_service
+    if _interview_service is None:
+        try:
+            _interview_service = AIInterviewService()
+        except ValueError as e:
+            logger.error(f"Failed to initialize AI Interview Service: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="AI service not configured. Please contact administrator."
+            )
+    return _interview_service
+
+@app.post("/api/v1/interviews", response_model=InterviewResponse, tags=["Interviews"])
+async def create_interview(
+    interview_data: InterviewCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Create a new interview (STEP 6)"""
+    
+    # Verify application exists
+    application = db.query(Application).filter(
+        Application.id == interview_data.application_id,
+        Application.user_id == current_user.id
+    ).first()
+    
+    if not application:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Application not found"
+        )
+    
+    # Create interview
+    new_interview = Interview(
+        user_id=current_user.id,
+        application_id=interview_data.application_id,
+        interview_type=interview_data.interview_type,
+        scheduled_date=interview_data.scheduled_date,
+        duration_minutes=interview_data.duration_minutes,
+        is_virtual=interview_data.is_virtual,
+        meeting_link=interview_data.meeting_link,
+        interviewer_name=interview_data.interviewer_name
+    )
+    
+    db.add(new_interview)
+    
+    # Update application status
+    application.status = ApplicationStatus.INTERVIEW_SCHEDULED
+    application.last_status_change = datetime.utcnow()
+    
+    db.commit()
+    db.refresh(new_interview)
+    
+    logger.info(f"Interview created for user {current_user.email}: {new_interview.id}")
+    return new_interview
+
+@app.get("/api/v1/interviews", response_model=List[InterviewResponse], tags=["Interviews"])
+async def list_interviews(
+    upcoming: Optional[bool] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """List all user interviews"""
+    query = db.query(Interview).filter(Interview.user_id == current_user.id)
+    
+    if upcoming is True:
+        query = query.filter(
+            Interview.scheduled_date >= datetime.utcnow(),
+            Interview.completed == False
+        )
+    elif upcoming is False:
+        query = query.filter(Interview.completed == True)
+    
+    interviews = query.order_by(Interview.scheduled_date.desc()).all()
+    return interviews
+
+@app.post("/api/v1/interviews/prepare", tags=["Interviews"])
+async def prepare_for_interview(
+    request: InterviewPrepareRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Generate interview preparation materials using AI"""
+    
+    try:
+        ai_service = get_interview_service()
+        
+        # Prepare user background
+        user_background = {
+            "major": current_user.major,
+            "academic_level": current_user.academic_level.value if current_user.academic_level else None,
+            "skills": current_user.skills or []
+        }
+        
+        # Generate interview questions
+        questions = ai_service.generate_interview_questions(
+            company_name=request.company_name,
+            position_title=request.position_title,
+            interview_type=request.interview_type.value,
+            job_description=request.job_description,
+            user_background=user_background
+        )
+        
+        # Generate company research
+        research = ai_service.generate_company_research(
+            company_name=request.company_name,
+            position_title=request.position_title
+        )
+        
+        return {
+            "practice_questions": questions,
+            "company_research": research,
+            "interview_type": request.interview_type,
+            "tip": "Practice using the STAR method for behavioral questions"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error preparing interview: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to prepare interview materials: {str(e)}"
+        )
+
+@app.post("/api/v1/interviews/practice/evaluate", tags=["Interviews"])
+async def evaluate_practice_answer(
+    question: str,
+    answer: str,
+    use_star: bool = False,
+    current_user: User = Depends(get_current_user)
+):
+    """Evaluate a practice interview answer"""
+    
+    try:
+        ai_service = get_interview_service()
+        
+        evaluation = ai_service.evaluate_answer(
+            question=question,
+            answer=answer,
+            use_star=use_star
+        )
+        
+        return evaluation
+        
+    except Exception as e:
+        logger.error(f"Error evaluating answer: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to evaluate answer: {str(e)}"
+        )
+
+# ============================================================================
+# ANALYTICS ENDPOINTS (STEP 7: Continuous Optimization)
+# ============================================================================
+
+@app.get("/api/v1/analytics/dashboard", tags=["Analytics"])
+async def get_analytics_dashboard(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get comprehensive analytics dashboard (STEP 7)"""
+    
+    # Get all applications
+    all_apps = db.query(Application).filter(
+        Application.user_id == current_user.id
+    ).all()
+    
+    total_apps = len(all_apps)
+    
+    # Count by status
+    status_counts = {}
+    for status in ApplicationStatus:
+        count = sum(1 for app in all_apps if app.status == status)
+        status_counts[status.value] = count
+    
+    # Calculate rates
+    applied = status_counts.get("Applied", 0)
+    interviewed = sum(1 for app in all_apps if app.status in [
+        ApplicationStatus.INTERVIEWED,
+        ApplicationStatus.OFFER,
+        ApplicationStatus.ACCEPTED
+    ])
+    offers = status_counts.get("Offer", 0) + status_counts.get("Accepted", 0)
+    
+    response_rate = (applied - status_counts.get("Draft", 0)) / applied if applied > 0 else 0
+    interview_rate = interviewed / applied if applied > 0 else 0
+    offer_rate = offers / interviewed if interviewed > 0 else 0
+    
+    # Recent activity
+    recent_apps = sorted(all_apps, key=lambda x: x.updated_at, reverse=True)[:5]
+    recent_activity = [{
+        "id": app.id,
+        "job_id": app.job_id,
+        "status": app.status.value,
+        "updated_at": app.updated_at.isoformat()
+    } for app in recent_apps]
+    
+    # Monthly trends
+    monthly_trends = {}
+    for app in all_apps:
+        month_key = app.created_at.strftime("%Y-%m")
+        monthly_trends[month_key] = monthly_trends.get(month_key, 0) + 1
+    
+    # Next steps
+    next_steps = []
+    if status_counts.get("Draft", 0) > 0:
+        next_steps.append(f"Complete {status_counts['Draft']} draft applications")
+    if total_apps < 10:
+        next_steps.append("Apply to more positions to increase your chances")
+    if interviewed == 0 and applied > 5:
+        next_steps.append("Review and optimize your resume and cover letters")
+    
+    return {
+        "total_applications": total_apps,
+        "applications_by_status": status_counts,
+        "response_rate": round(response_rate, 2),
+        "interview_rate": round(interview_rate, 2),
+        "offer_rate": round(offer_rate, 2),
+        "recent_activity": recent_activity,
+        "monthly_trends": monthly_trends,
+        "next_steps": next_steps,
+        "statistics": {
+            "total_applied": applied,
+            "total_interviews": interviewed,
+            "total_offers": offers
+        }
+    }
+
+# ============================================================================
+# RUN APPLICATION
+# ============================================================================
+
+if __name__ == "__main__":
+    import uvicorn
+    
+    print("\n" + "="*60)
+    print("🚀 AI Career Coach Backend Starting...")
+    print("="*60)
+    print(f"✅ API Server: http://localhost:8000")
+    print(f"📚 API Docs: http://localhost:8000/docs")
+    print(f"🔍 ReDoc: http://localhost:8000/redoc")
+    print(f"💚 Health: http://localhost:8000/health")
+    print("="*60)
+    print("\n✨ Ready to help students land their dream jobs!\n")
+    
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=8000,
+        log_level="info",
+        access_log=True
+    )
