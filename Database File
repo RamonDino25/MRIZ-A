@@ -1,0 +1,393 @@
+"""
+Database Models for AI Career Coach
+All models include proper validation, relationships, and indexes
+"""
+from datetime import datetime
+from sqlalchemy import Column, Integer, String, Text, DateTime, Float, Boolean, ForeignKey, JSON, Enum as SQLEnum
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import relationship, Session
+from sqlalchemy import create_engine
+import enum
+from typing import Optional, List
+import os
+
+Base = declarative_base()
+
+# Enums for type safety
+class AcademicLevel(str, enum.Enum):
+    FRESHMAN = "Freshman"
+    SOPHOMORE = "Sophomore"
+    JUNIOR = "Junior"
+    SENIOR = "Senior"
+    GRADUATE = "Graduate"
+    RECENT_GRAD = "Recent Graduate"
+
+class ApplicationStatus(str, enum.Enum):
+    DRAFT = "Draft"
+    APPLIED = "Applied"
+    UNDER_REVIEW = "Under Review"
+    INTERVIEW_SCHEDULED = "Interview Scheduled"
+    INTERVIEWED = "Interviewed"
+    OFFER = "Offer"
+    ACCEPTED = "Accepted"
+    REJECTED = "Rejected"
+    WITHDRAWN = "Withdrawn"
+
+class ResumeFormat(str, enum.Enum):
+    ATS_OPTIMIZED = "ats_optimized"
+    CREATIVE = "creative"
+    ACADEMIC = "academic"
+    TECHNICAL = "technical"
+
+class InterviewType(str, enum.Enum):
+    PHONE_SCREEN = "Phone Screen"
+    BEHAVIORAL = "Behavioral"
+    TECHNICAL = "Technical"
+    CASE_STUDY = "Case Study"
+    PANEL = "Panel"
+    FINAL_ROUND = "Final Round"
+
+# ============================================================================
+# USER MODEL
+# ============================================================================
+class User(Base):
+    __tablename__ = "users"
+    
+    # Primary Key
+    id = Column(Integer, primary_key=True, index=True)
+    
+    # Authentication
+    email = Column(String(255), unique=True, index=True, nullable=False)
+    hashed_password = Column(String(255), nullable=False)
+    is_active = Column(Boolean, default=True)
+    is_verified = Column(Boolean, default=False)
+    
+    # Personal Information
+    name = Column(String(255), nullable=False)
+    phone = Column(String(20), nullable=True)
+    location = Column(String(255), nullable=True)
+    
+    # Academic Information
+    academic_level = Column(SQLEnum(AcademicLevel), nullable=True)
+    major = Column(String(255), nullable=True)
+    minor = Column(String(255), nullable=True)
+    university = Column(String(255), nullable=True)
+    graduation_date = Column(String(20), nullable=True)  # Format: YYYY-MM
+    gpa = Column(Float, nullable=True)
+    
+    # Skills & Interests
+    skills = Column(JSON, default=list)  # ["Python", "React", "SQL"]
+    interests = Column(JSON, default=list)  # ["Software Engineering", "Data Science"]
+    
+    # Profile Metadata
+    profile_completeness = Column(Integer, default=0)  # 0-100
+    linkedin_url = Column(String(500), nullable=True)
+    github_url = Column(String(500), nullable=True)
+    portfolio_url = Column(String(500), nullable=True)
+    
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_login = Column(DateTime, nullable=True)
+    
+    # Relationships
+    resumes = relationship("Resume", back_populates="user", cascade="all, delete-orphan")
+    cover_letters = relationship("CoverLetter", back_populates="user", cascade="all, delete-orphan")
+    applications = relationship("Application", back_populates="user", cascade="all, delete-orphan")
+    interviews = relationship("Interview", back_populates="user", cascade="all, delete-orphan")
+    
+    def __repr__(self):
+        return f"<User(id={self.id}, email={self.email}, name={self.name})>"
+
+# ============================================================================
+# RESUME MODEL
+# ============================================================================
+class Resume(Base):
+    __tablename__ = "resumes"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    
+    # Resume Details
+    title = Column(String(255), nullable=False)
+    format_type = Column(SQLEnum(ResumeFormat), default=ResumeFormat.ATS_OPTIMIZED)
+    
+    # Content Sections
+    summary = Column(Text, nullable=True)
+    experience = Column(JSON, default=list)  # List of job experiences
+    education = Column(JSON, default=list)  # List of education entries
+    skills_section = Column(JSON, default=list)  # Organized skills
+    projects = Column(JSON, default=list)  # List of projects
+    certifications = Column(JSON, default=list)  # List of certifications
+    awards = Column(JSON, default=list)  # List of awards
+    
+    # AI Metadata
+    ats_score = Column(Integer, nullable=True)  # 0-100
+    keywords_used = Column(JSON, default=list)
+    ai_suggestions = Column(JSON, default=list)
+    
+    # File Information
+    file_path = Column(String(500), nullable=True)
+    file_format = Column(String(10), default="pdf")  # pdf, docx
+    
+    # Status
+    is_primary = Column(Boolean, default=False)
+    is_active = Column(Boolean, default=True)
+    
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    user = relationship("User", back_populates="resumes")
+    applications = relationship("Application", back_populates="resume")
+    
+    def __repr__(self):
+        return f"<Resume(id={self.id}, title={self.title}, user_id={self.user_id})>"
+
+# ============================================================================
+# COVER LETTER MODEL
+# ============================================================================
+class CoverLetter(Base):
+    __tablename__ = "cover_letters"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    
+    # Cover Letter Details
+    title = Column(String(255), nullable=False)
+    company_name = Column(String(255), nullable=False)
+    position_title = Column(String(255), nullable=False)
+    
+    # Content
+    content = Column(Text, nullable=False)
+    tone = Column(String(50), default="professional")  # professional, enthusiastic, formal
+    
+    # Metadata
+    word_count = Column(Integer, nullable=True)
+    ai_generated = Column(Boolean, default=True)
+    customizations = Column(JSON, default=list)  # List of user edits
+    
+    # File Information
+    file_path = Column(String(500), nullable=True)
+    
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    user = relationship("User", back_populates="cover_letters")
+    applications = relationship("Application", back_populates="cover_letter")
+    
+    def __repr__(self):
+        return f"<CoverLetter(id={self.id}, company={self.company_name}, position={self.position_title})>"
+
+# ============================================================================
+# JOB/INTERNSHIP MODEL
+# ============================================================================
+class Job(Base):
+    __tablename__ = "jobs"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    
+    # Job Details
+    title = Column(String(255), nullable=False, index=True)
+    company_name = Column(String(255), nullable=False, index=True)
+    company_logo_url = Column(String(500), nullable=True)
+    
+    # Location & Type
+    location = Column(String(255), nullable=True)
+    remote = Column(Boolean, default=False)
+    job_type = Column(String(50), default="Internship")  # Internship, Co-op, Entry-Level
+    
+    # Description
+    description = Column(Text, nullable=False)
+    requirements = Column(JSON, default=list)  # Required skills/qualifications
+    responsibilities = Column(JSON, default=list)  # Job responsibilities
+    preferred_qualifications = Column(JSON, default=list)  # Nice-to-have skills
+    
+    # Compensation
+    salary_min = Column(Integer, nullable=True)
+    salary_max = Column(Integer, nullable=True)
+    salary_currency = Column(String(10), default="USD")
+    
+    # Application Details
+    application_url = Column(String(500), nullable=False)
+    application_deadline = Column(DateTime, nullable=True)
+    
+    # Metadata
+    source = Column(String(100), nullable=True)  # LinkedIn, Indeed, Handshake, etc.
+    external_id = Column(String(255), nullable=True, unique=True)
+    industry = Column(String(100), nullable=True)
+    keywords = Column(JSON, default=list)
+    
+    # Status
+    is_active = Column(Boolean, default=True)
+    
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    posted_date = Column(DateTime, nullable=True)
+    
+    # Relationships
+    applications = relationship("Application", back_populates="job")
+    
+    def __repr__(self):
+        return f"<Job(id={self.id}, title={self.title}, company={self.company_name})>"
+
+# ============================================================================
+# APPLICATION MODEL
+# ============================================================================
+class Application(Base):
+    __tablename__ = "applications"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    job_id = Column(Integer, ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False)
+    resume_id = Column(Integer, ForeignKey("resumes.id", ondelete="SET NULL"), nullable=True)
+    cover_letter_id = Column(Integer, ForeignKey("cover_letters.id", ondelete="SET NULL"), nullable=True)
+    
+    # Application Status
+    status = Column(SQLEnum(ApplicationStatus), default=ApplicationStatus.DRAFT, index=True)
+    
+    # Application Details
+    applied_date = Column(DateTime, nullable=True)
+    last_status_change = Column(DateTime, default=datetime.utcnow)
+    
+    # Notes & Tracking
+    notes = Column(Text, nullable=True)
+    follow_up_date = Column(DateTime, nullable=True)
+    referral_name = Column(String(255), nullable=True)
+    
+    # Response Tracking
+    response_received = Column(Boolean, default=False)
+    response_date = Column(DateTime, nullable=True)
+    rejection_reason = Column(Text, nullable=True)
+    
+    # Metadata
+    match_score = Column(Integer, nullable=True)  # 0-100, AI-calculated fit
+    priority = Column(Integer, default=3)  # 1-5, user-set priority
+    
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    user = relationship("User", back_populates="applications")
+    job = relationship("Job", back_populates="applications")
+    resume = relationship("Resume", back_populates="applications")
+    cover_letter = relationship("CoverLetter", back_populates="applications")
+    interviews = relationship("Interview", back_populates="application", cascade="all, delete-orphan")
+    
+    def __repr__(self):
+        return f"<Application(id={self.id}, user_id={self.user_id}, job_id={self.job_id}, status={self.status})>"
+
+# ============================================================================
+# INTERVIEW MODEL
+# ============================================================================
+class Interview(Base):
+    __tablename__ = "interviews"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    application_id = Column(Integer, ForeignKey("applications.id", ondelete="CASCADE"), nullable=False)
+    
+    # Interview Details
+    interview_type = Column(SQLEnum(InterviewType), nullable=False)
+    scheduled_date = Column(DateTime, nullable=True)
+    duration_minutes = Column(Integer, default=60)
+    
+    # Location/Format
+    location = Column(String(255), nullable=True)
+    is_virtual = Column(Boolean, default=False)
+    meeting_link = Column(String(500), nullable=True)
+    
+    # Interviewer Information
+    interviewer_name = Column(String(255), nullable=True)
+    interviewer_title = Column(String(255), nullable=True)
+    interviewer_email = Column(String(255), nullable=True)
+    
+    # Preparation
+    preparation_notes = Column(Text, nullable=True)
+    questions_to_ask = Column(JSON, default=list)
+    practice_questions = Column(JSON, default=list)
+    company_research = Column(Text, nullable=True)
+    
+    # Post-Interview
+    completed = Column(Boolean, default=False)
+    completion_date = Column(DateTime, nullable=True)
+    self_assessment = Column(Text, nullable=True)
+    follow_up_sent = Column(Boolean, default=False)
+    
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    user = relationship("User", back_populates="interviews")
+    application = relationship("Application", back_populates="interviews")
+    
+    def __repr__(self):
+        return f"<Interview(id={self.id}, type={self.interview_type}, application_id={self.application_id})>"
+
+# ============================================================================
+# DATABASE ENGINE SETUP
+# ============================================================================
+def get_database_url():
+    """Get database URL from environment or use default SQLite"""
+    return os.getenv(
+        "DATABASE_URL",
+        "sqlite:///./career_coach.db"
+    )
+
+def create_db_engine():
+    """Create database engine with proper configuration"""
+    database_url = get_database_url()
+    
+    # SQLite specific configuration
+    if database_url.startswith("sqlite"):
+        engine = create_engine(
+            database_url,
+            connect_args={"check_same_thread": False},
+            echo=False
+        )
+    # PostgreSQL configuration
+    else:
+        engine = create_engine(
+            database_url,
+            pool_size=10,
+            max_overflow=20,
+            pool_pre_ping=True,
+            echo=False
+        )
+    
+    return engine
+
+# Create engine
+engine = create_db_engine()
+
+# Create SessionLocal class once
+from sqlalchemy.orm import sessionmaker
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+def init_db():
+    """Initialize database - create all tables"""
+    try:
+        Base.metadata.create_all(bind=engine)
+        print("✅ Database tables created successfully")
+    except Exception as e:
+        print(f"❌ Error creating database tables: {str(e)}")
+        raise
+
+def get_db():
+    """Dependency for getting database session"""
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+if __name__ == "__main__":
+    print("Initializing database...")
+    init_db()
+    print("Database ready!")
