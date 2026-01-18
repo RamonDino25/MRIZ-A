@@ -1,0 +1,518 @@
+"""
+Pydantic Schemas for Request/Response Validation
+All schemas include proper validation and example data
+"""
+from pydantic import BaseModel, EmailStr, Field, validator
+from typing import Optional, List, Dict, Any
+from datetime import datetime
+from enum import Enum
+
+# ============================================================================
+# ENUMS
+# ============================================================================
+class AcademicLevel(str, Enum):
+    FRESHMAN = "Freshman"
+    SOPHOMORE = "Sophomore"
+    JUNIOR = "Junior"
+    SENIOR = "Senior"
+    GRADUATE = "Graduate"
+    RECENT_GRAD = "Recent Graduate"
+
+class ApplicationStatus(str, Enum):
+    DRAFT = "Draft"
+    APPLIED = "Applied"
+    UNDER_REVIEW = "Under Review"
+    INTERVIEW_SCHEDULED = "Interview Scheduled"
+    INTERVIEWED = "Interviewed"
+    OFFER = "Offer"
+    ACCEPTED = "Accepted"
+    REJECTED = "Rejected"
+    WITHDRAWN = "Withdrawn"
+
+class ResumeFormat(str, Enum):
+    ATS_OPTIMIZED = "ats_optimized"
+    CREATIVE = "creative"
+    ACADEMIC = "academic"
+    TECHNICAL = "technical"
+
+class InterviewType(str, Enum):
+    PHONE_SCREEN = "Phone Screen"
+    BEHAVIORAL = "Behavioral"
+    TECHNICAL = "Technical"
+    CASE_STUDY = "Case Study"
+    PANEL = "Panel"
+    FINAL_ROUND = "Final Round"
+
+# ============================================================================
+# USER SCHEMAS
+# ============================================================================
+class UserCreate(BaseModel):
+    email: EmailStr
+    password: str = Field(..., min_length=8, max_length=128, description="Password must be at least 8 characters")
+    name: str = Field(..., min_length=2, max_length=255)
+    
+    @validator('password')
+    def validate_password_strength(cls, v):
+        """Validate password has minimum strength"""
+        if len(v) < 8:
+            raise ValueError('Password must be at least 8 characters long')
+        if len(v) > 128:
+            raise ValueError('Password must not exceed 128 characters')
+        # Optional: Add more strength checks for production
+        # has_upper = any(c.isupper() for c in v)
+        # has_lower = any(c.islower() for c in v)
+        # has_digit = any(c.isdigit() for c in v)
+        # if not (has_upper and has_lower and has_digit):
+        #     raise ValueError('Password must contain uppercase, lowercase, and digit')
+        return v
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "email": "john.doe@university.edu",
+                "password": "SecurePass123!",
+                "name": "John Doe"
+            }
+        }
+
+class UserLogin(BaseModel):
+    email: EmailStr
+    password: str
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "email": "john.doe@university.edu",
+                "password": "SecurePass123!"
+            }
+        }
+
+class UserProfileUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=2, max_length=255)
+    phone: Optional[str] = None
+    location: Optional[str] = None
+    academic_level: Optional[AcademicLevel] = None
+    major: Optional[str] = None
+    minor: Optional[str] = None
+    university: Optional[str] = None
+    graduation_date: Optional[str] = Field(None, pattern=r"^\d{4}-(0[1-9]|1[0-2])$")
+    gpa: Optional[float] = Field(None, ge=0.0, le=4.0)
+    skills: Optional[List[str]] = None
+    interests: Optional[List[str]] = None
+    linkedin_url: Optional[str] = None
+    github_url: Optional[str] = None
+    portfolio_url: Optional[str] = None
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "name": "John Doe",
+                "phone": "+1-555-0123",
+                "location": "San Francisco, CA",
+                "academic_level": "Junior",
+                "major": "Computer Science",
+                "university": "Stanford University",
+                "graduation_date": "2025-06",
+                "gpa": 3.75,
+                "skills": ["Python", "React", "SQL", "Machine Learning"],
+                "interests": ["Software Engineering", "Data Science"]
+            }
+        }
+
+class UserResponse(BaseModel):
+    id: int
+    email: str
+    name: str
+    phone: Optional[str] = None
+    location: Optional[str] = None
+    academic_level: Optional[AcademicLevel] = None
+    major: Optional[str] = None
+    university: Optional[str] = None
+    graduation_date: Optional[str] = None
+    gpa: Optional[float] = None
+    skills: List[str] = []
+    interests: List[str] = []
+    profile_completeness: int
+    linkedin_url: Optional[str] = None
+    github_url: Optional[str] = None
+    portfolio_url: Optional[str] = None
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+# ============================================================================
+# RESUME SCHEMAS
+# ============================================================================
+class ExperienceEntry(BaseModel):
+    company: str
+    position: str
+    start_date: str
+    end_date: Optional[str] = None
+    current: bool = False
+    description: List[str]
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "company": "Tech Corp",
+                "position": "Software Engineer Intern",
+                "start_date": "2024-06",
+                "end_date": "2024-08",
+                "current": False,
+                "description": [
+                    "Developed RESTful APIs using Python and FastAPI",
+                    "Improved application performance by 30%",
+                    "Collaborated with cross-functional teams"
+                ]
+            }
+        }
+
+class EducationEntry(BaseModel):
+    institution: str
+    degree: str
+    field_of_study: str
+    start_date: str
+    end_date: str
+    gpa: Optional[float] = None
+    relevant_coursework: Optional[List[str]] = None
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "institution": "Stanford University",
+                "degree": "Bachelor of Science",
+                "field_of_study": "Computer Science",
+                "start_date": "2022-09",
+                "end_date": "2026-05",
+                "gpa": 3.75,
+                "relevant_coursework": ["Data Structures", "Algorithms", "Machine Learning"]
+            }
+        }
+
+class ProjectEntry(BaseModel):
+    name: str
+    description: str
+    technologies: List[str]
+    url: Optional[str] = None
+    highlights: List[str]
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "name": "E-Commerce Platform",
+                "description": "Full-stack web application for online shopping",
+                "technologies": ["React", "Node.js", "PostgreSQL"],
+                "url": "https://github.com/user/ecommerce",
+                "highlights": [
+                    "Implemented secure payment processing",
+                    "Handled 10,000+ daily active users"
+                ]
+            }
+        }
+
+class ResumeCreate(BaseModel):
+    title: str = Field(..., min_length=3, max_length=255)
+    format_type: ResumeFormat = ResumeFormat.ATS_OPTIMIZED
+    summary: Optional[str] = None
+    experience: List[ExperienceEntry] = []
+    education: List[EducationEntry] = []
+    skills_section: List[str] = []
+    projects: List[ProjectEntry] = []
+    certifications: List[str] = []
+    awards: List[str] = []
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "title": "Software Engineer Resume",
+                "format_type": "ats_optimized",
+                "summary": "Motivated CS student with internship experience...",
+                "skills_section": ["Python", "JavaScript", "React", "SQL"]
+            }
+        }
+
+class ResumeResponse(BaseModel):
+    id: int
+    user_id: int
+    title: str
+    format_type: ResumeFormat
+    summary: Optional[str] = None
+    ats_score: Optional[int] = None
+    is_primary: bool
+    file_path: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class ResumeGenerateRequest(BaseModel):
+    target_position: Optional[str] = Field(None, description="Target job position for optimization")
+    keywords: Optional[List[str]] = Field(None, description="Keywords to emphasize")
+    format_type: ResumeFormat = ResumeFormat.ATS_OPTIMIZED
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "target_position": "Software Engineer Intern",
+                "keywords": ["Python", "FastAPI", "React", "PostgreSQL"],
+                "format_type": "ats_optimized"
+            }
+        }
+
+# ============================================================================
+# COVER LETTER SCHEMAS
+# ============================================================================
+class CoverLetterCreate(BaseModel):
+    company_name: str = Field(..., min_length=2)
+    position_title: str = Field(..., min_length=2)
+    job_description: Optional[str] = None
+    tone: str = Field("professional", pattern="^(professional|enthusiastic|formal)$")
+    custom_points: Optional[List[str]] = Field(None, description="Key points to include")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "company_name": "Google",
+                "position_title": "Software Engineer Intern",
+                "job_description": "We are looking for a talented intern...",
+                "tone": "enthusiastic",
+                "custom_points": [
+                    "Experience with Python and cloud platforms",
+                    "Previous internship at startup"
+                ]
+            }
+        }
+
+class CoverLetterResponse(BaseModel):
+    id: int
+    user_id: int
+    title: str
+    company_name: str
+    position_title: str
+    content: str
+    tone: str
+    word_count: Optional[int] = None
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+# ============================================================================
+# JOB SCHEMAS
+# ============================================================================
+class JobCreate(BaseModel):
+    title: str
+    company_name: str
+    location: Optional[str] = None
+    remote: bool = False
+    job_type: str = "Internship"
+    description: str
+    requirements: List[str] = []
+    responsibilities: List[str] = []
+    salary_min: Optional[int] = None
+    salary_max: Optional[int] = None
+    application_url: str
+    industry: Optional[str] = None
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "title": "Software Engineer Intern",
+                "company_name": "Tech Corp",
+                "location": "San Francisco, CA",
+                "remote": False,
+                "description": "Exciting internship opportunity...",
+                "requirements": ["Python", "JavaScript", "Git"],
+                "application_url": "https://techcorp.com/careers/123"
+            }
+        }
+
+class JobResponse(BaseModel):
+    id: int
+    title: str
+    company_name: str
+    location: Optional[str] = None
+    remote: bool
+    job_type: str
+    description: str
+    requirements: List[str]
+    salary_min: Optional[int] = None
+    salary_max: Optional[int] = None
+    application_url: str
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class JobSearchRequest(BaseModel):
+    keywords: Optional[str] = None
+    location: Optional[str] = None
+    remote: Optional[bool] = None
+    job_type: Optional[str] = None
+    limit: int = Field(10, ge=1, le=100)
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "keywords": "software engineer",
+                "location": "San Francisco",
+                "remote": True,
+                "limit": 20
+            }
+        }
+
+# ============================================================================
+# APPLICATION SCHEMAS
+# ============================================================================
+class ApplicationCreate(BaseModel):
+    job_id: int
+    resume_id: Optional[int] = None
+    cover_letter_id: Optional[int] = None
+    notes: Optional[str] = None
+    priority: int = Field(3, ge=1, le=5)
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "job_id": 1,
+                "resume_id": 1,
+                "cover_letter_id": 1,
+                "notes": "Applied through referral",
+                "priority": 4
+            }
+        }
+
+class ApplicationUpdate(BaseModel):
+    status: Optional[ApplicationStatus] = None
+    notes: Optional[str] = None
+    follow_up_date: Optional[datetime] = None
+    response_received: Optional[bool] = None
+    priority: Optional[int] = Field(None, ge=1, le=5)
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "status": "Under Review",
+                "notes": "HR contacted me for phone screen",
+                "response_received": True
+            }
+        }
+
+class ApplicationResponse(BaseModel):
+    id: int
+    user_id: int
+    job_id: int
+    status: ApplicationStatus
+    applied_date: Optional[datetime] = None
+    notes: Optional[str] = None
+    match_score: Optional[int] = None
+    priority: int
+    created_at: datetime
+    updated_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+# ============================================================================
+# INTERVIEW SCHEMAS
+# ============================================================================
+class InterviewCreate(BaseModel):
+    application_id: int
+    interview_type: InterviewType
+    scheduled_date: Optional[datetime] = None
+    duration_minutes: int = Field(60, ge=15, le=480)
+    is_virtual: bool = False
+    meeting_link: Optional[str] = None
+    interviewer_name: Optional[str] = None
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "application_id": 1,
+                "interview_type": "Behavioral",
+                "scheduled_date": "2026-02-15T14:00:00",
+                "duration_minutes": 60,
+                "is_virtual": True,
+                "meeting_link": "https://zoom.us/j/123456"
+            }
+        }
+
+class InterviewPrepareRequest(BaseModel):
+    company_name: str
+    position_title: str
+    interview_type: InterviewType
+    job_description: Optional[str] = None
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "company_name": "Google",
+                "position_title": "Software Engineer Intern",
+                "interview_type": "Behavioral",
+                "job_description": "Looking for a talented intern..."
+            }
+        }
+
+class InterviewResponse(BaseModel):
+    id: int
+    user_id: int
+    application_id: int
+    interview_type: InterviewType
+    scheduled_date: Optional[datetime] = None
+    is_virtual: bool
+    completed: bool
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+# ============================================================================
+# ANALYTICS SCHEMAS
+# ============================================================================
+class AnalyticsDashboard(BaseModel):
+    total_applications: int
+    applications_by_status: Dict[str, int]
+    response_rate: float
+    interview_rate: float
+    offer_rate: float
+    average_response_days: Optional[float] = None
+    recent_activity: List[Dict[str, Any]]
+    monthly_trends: Dict[str, int]
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "total_applications": 25,
+                "applications_by_status": {
+                    "Applied": 10,
+                    "Under Review": 5,
+                    "Interviewed": 3
+                },
+                "response_rate": 0.60,
+                "interview_rate": 0.30,
+                "offer_rate": 0.12
+            }
+        }
+
+# ============================================================================
+# TOKEN SCHEMAS
+# ============================================================================
+class Token(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    
+class TokenData(BaseModel):
+    email: Optional[str] = None
+
+# ============================================================================
+# GENERIC RESPONSE SCHEMAS
+# ============================================================================
+class MessageResponse(BaseModel):
+    message: str
+    success: bool = True
+    
+class ErrorResponse(BaseModel):
+    detail: str
+    error_code: Optional[str] = None
