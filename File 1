@@ -1,0 +1,136 @@
+# =================================================================
+# AI Career Coach - Environment Configuration
+# =================================================================
+
+# =================================================================
+# API KEYS (REQUIRED)
+# =================================================================
+
+# Anthropic Claude API Key (REQUIRED for AI features)
+# Get your key at: https://console.anthropic.com/
+ANTHROPIC_API_KEY=your_anthropic_api_key_here
+
+# OpenAI API Key (OPTIONAL - for additional AI features)
+OPENAI_API_KEY=your_openai_api_key_here
+
+# =================================================================
+# DATABASE CONFIGURATION
+# =================================================================
+
+# Database URL - supports SQLite (dev) and PostgreSQL (production)
+# SQLite (default for development):
+DATABASE_URL=sqlite:///./career_coach.db
+
+# PostgreSQL (recommended for production):
+# DATABASE_URL=postgresql://username:password@localhost:5432/career_coach
+# Example with docker:
+# DATABASE_URL=postgresql://career_user:secure_password@postgres:5432/career_coach
+
+# =================================================================
+# AUTHENTICATION & SECURITY
+# =================================================================
+
+# JWT Secret Key (REQUIRED - change in production!)
+# Generate a secure key: openssl rand -hex 32
+JWT_SECRET_KEY=your-secret-key-change-in-production-please-make-it-secure
+
+# JWT Algorithm
+JWT_ALGORITHM=HS256
+
+# Access Token Expiration (in minutes)
+ACCESS_TOKEN_EXPIRE_MINUTES=43200  # 30 days
+
+# =================================================================
+# APPLICATION SETTINGS
+# =================================================================
+
+# Frontend URL (for CORS)
+FRONTEND_URL=http://localhost:3000
+
+# Backend URL
+BACKEND_URL=http://localhost:8000
+
+# Environment (development, staging, production)
+ENVIRONMENT=development
+
+# Debug mode (True/False)
+DEBUG=True
+
+# Log Level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+LOG_LEVEL=INFO
+
+# =================================================================
+# REDIS (OPTIONAL - for caching and background tasks)
+# =================================================================
+
+# Redis URL
+REDIS_URL=redis://localhost:6379/0
+
+# =================================================================
+# FILE STORAGE
+# =================================================================
+
+# Maximum upload file size (in bytes)
+MAX_UPLOAD_SIZE=10485760  # 10MB
+
+# Upload directory
+UPLOAD_DIR=./uploads
+
+# =================================================================
+# EMAIL CONFIGURATION (OPTIONAL - for notifications)
+# =================================================================
+
+# SMTP settings
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USERNAME=your-email@gmail.com
+SMTP_PASSWORD=your-app-password
+SMTP_FROM_EMAIL=your-email@gmail.com
+SMTP_FROM_NAME=AI Career Coach
+
+# =================================================================
+# EXTERNAL SERVICES (OPTIONAL)
+# =================================================================
+
+# LinkedIn API (for job scraping)
+LINKEDIN_API_KEY=your_linkedin_api_key
+
+# Indeed API
+INDEED_API_KEY=your_indeed_api_key
+
+# Handshake API
+HANDSHAKE_API_KEY=your_handshake_api_key
+
+# =================================================================
+# RATE LIMITING
+# =================================================================
+
+# API rate limits
+RATE_LIMIT_PER_MINUTE=60
+RATE_LIMIT_PER_HOUR=1000
+
+# =================================================================
+# MONITORING (OPTIONAL)
+# =================================================================
+
+# Sentry DSN (for error tracking)
+SENTRY_DSN=your_sentry_dsn_here
+
+# =================================================================
+# FEATURE FLAGS
+# =================================================================
+
+# Enable/disable features
+ENABLE_EMAIL_NOTIFICATIONS=False
+ENABLE_JOB_SCRAPING=False
+ENABLE_RESUME_EXPORT=True
+ENABLE_COVER_LETTER_EXPORT=True
+
+# =================================================================
+# NOTES
+# =================================================================
+# 1. Copy this file to .env and fill in your actual values
+# 2. NEVER commit .env to version control
+# 3. Use strong, unique passwords in production
+# 4. Regularly rotate API keys and secrets
+# 5. For production, use environment-specific values
