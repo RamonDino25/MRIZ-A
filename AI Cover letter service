@@ -1,0 +1,318 @@
+"""
+import logging
+logger = logging.getLogger(__name__)
+AI Cover Letter Generation Service
+Uses Claude API to generate personalized cover letters
+"""
+import os
+from typing import Dict, List, Optional, Any
+from anthropic import Anthropic
+
+class AICoverLetterService:
+    def __init__(self):
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise ValueError("ANTHROPIC_API_KEY environment variable not set")
+        
+        self.client = Anthropic(api_key=api_key)
+        self.model = "claude-sonnet-4-20250514"
+    
+    def generate_cover_letter(
+        self,
+        user_profile: Dict[str, Any],
+        company_name: str,
+        position_title: str,
+        job_description: Optional[str] = None,
+        tone: str = "professional",
+        custom_points: Optional[List[str]] = None
+    ) -> str:
+        """
+        Generate a personalized cover letter
+        
+        Args:
+            user_profile: User's profile information
+            company_name: Target company name
+            position_title: Position being applied for
+            job_description: Job description text
+            tone: Desired tone (professional, enthusiastic, formal)
+            custom_points: Specific points to include
+            
+        Returns:
+            Generated cover letter text
+        """
+        
+        # Build the prompt
+        prompt = self._build_cover_letter_prompt(
+            user_profile=user_profile,
+            company_name=company_name,
+            position_title=position_title,
+            job_description=job_description,
+            tone=tone,
+            custom_points=custom_points
+        )
+        
+        try:
+            # Call Claude API
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=2000,
+                temperature=0.8,  # Higher temperature for more personality
+                messages=[
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ]
+            )
+            
+            # Extract text from response
+            cover_letter = response.content[0].text.strip()
+            
+            return cover_letter
+            
+        except Exception as e:
+            logger.error(f"Error generating cover letter: {str(e)}")
+            raise Exception(f"Failed to generate cover letter: {str(e)}")
+    
+    def _build_cover_letter_prompt(
+        self,
+        user_profile: Dict[str, Any],
+        company_name: str,
+        position_title: str,
+        job_description: Optional[str],
+        tone: str,
+        custom_points: Optional[List[str]]
+    ) -> str:
+        """Build the prompt for cover letter generation"""
+        
+        # Tone descriptions
+        tone_guidance = {
+            "professional": "balanced, confident, and professional",
+            "enthusiastic": "energetic, passionate, and eager",
+            "formal": "traditional, reserved, and highly professional"
+        }
+        
+        tone_desc = tone_guidance.get(tone, "professional")
+        
+        custom_points_str = ""
+        if custom_points:
+            custom_points_str = "\n**Points to Emphasize:**\n" + "\n".join([f"- {point}" for point in custom_points])
+        
+        job_desc_str = ""
+        if job_description:
+            job_desc_str = f"\n**Job Description:**\n{job_description[:1000]}"  # Limit length
+        
+        prompt = f"""You are an expert cover letter writer who creates compelling, personalized cover letters for job applications.
+
+Write a cover letter for the following candidate applying to this position:
+
+**Candidate Profile:**
+- Name: {user_profile.get('name', 'Applicant')}
+- Academic Level: {user_profile.get('academic_level', 'Student')}
+- Major: {user_profile.get('major', 'N/A')}
+- University: {user_profile.get('university', 'N/A')}
+- Expected Graduation: {user_profile.get('graduation_date', 'N/A')}
+- GPA: {user_profile.get('gpa', 'N/A')}
+- Key Skills: {', '.join(user_profile.get('skills', [])[:8])}
+- Interests: {', '.join(user_profile.get('interests', [])[:5])}
+
+**Position Details:**
+- Company: {company_name}
+- Position: {position_title}
+{job_desc_str}
+{custom_points_str}
+
+**Tone:** {tone_desc}
+
+**Requirements:**
+1. Length: 250-350 words (3-4 paragraphs)
+2. Structure:
+   - Opening: Express enthusiasm and mention position
+   - Body (1-2 paragraphs): Connect skills/experience to role
+   - Closing: Call to action and thank you
+3. Be specific and genuine - avoid generic phrases
+4. Show knowledge of the company
+5. Highlight relevant skills and experiences
+6. Demonstrate cultural fit
+7. Use {tone_desc} tone throughout
+
+**Important:**
+- Do NOT use placeholder text like [Your Name] or [Your University]
+- Use actual information from the candidate profile
+- Make it feel personal and authentic
+- Avoid clichés like "I am writing to express my interest"
+- Don't repeat the resume - add new insights
+
+Write the cover letter now:"""
+        
+        return prompt
+    
+    def customize_cover_letter(
+        self,
+        original_letter: str,
+        modifications: List[str]
+    ) -> str:
+        """
+        Customize an existing cover letter based on feedback
+        
+        Args:
+            original_letter: Original cover letter text
+            modifications: List of requested changes
+            
+        Returns:
+            Modified cover letter
+        """
+        
+        modifications_str = "\n".join([f"{i+1}. {mod}" for i, mod in enumerate(modifications)])
+        
+        prompt = f"""Revise this cover letter based on the requested modifications:
+
+**Original Cover Letter:**
+{original_letter}
+
+**Requested Modifications:**
+{modifications_str}
+
+**Instructions:**
+- Apply all requested modifications
+- Maintain the overall tone and structure
+- Keep the same length (250-350 words)
+- Ensure smooth transitions
+- Keep it professional and polished
+
+Return ONLY the revised cover letter (no explanations or notes):"""
+        
+        try:
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=2000,
+                temperature=0.7,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            
+            revised_letter = response.content[0].text.strip()
+            return revised_letter
+            
+        except Exception as e:
+            logger.error(f"Error customizing cover letter: {str(e)}")
+            raise Exception(f"Failed to customize cover letter: {str(e)}")
+    
+    def generate_email_followup(
+        self,
+        company_name: str,
+        position_title: str,
+        interviewer_name: Optional[str] = None,
+        interview_type: str = "interview"
+    ) -> str:
+        """
+        Generate a follow-up email after application or interview
+        
+        Args:
+            company_name: Company name
+            position_title: Position title
+            interviewer_name: Name of interviewer (if applicable)
+            interview_type: Type of follow-up (interview, application)
+            
+        Returns:
+            Follow-up email text
+        """
+        
+        if interview_type == "interview" and interviewer_name:
+            prompt = f"""Write a professional thank-you email to send after an interview.
+
+**Details:**
+- Company: {company_name}
+- Position: {position_title}
+- Interviewer: {interviewer_name}
+
+**Requirements:**
+1. Subject line
+2. Brief, sincere thank you (150-200 words)
+3. Reference specific discussion points
+4. Reiterate interest
+5. Professional closing
+
+Format:
+Subject: [subject line]
+
+[Email body]"""
+        else:
+            prompt = f"""Write a professional follow-up email to check on application status.
+
+**Details:**
+- Company: {company_name}
+- Position: {position_title}
+
+**Requirements:**
+1. Subject line
+2. Polite inquiry about status (100-150 words)
+3. Reiterate interest
+4. Professional closing
+
+Format:
+Subject: [subject line]
+
+[Email body]"""
+        
+        try:
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=1000,
+                temperature=0.7,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            
+            email_text = response.content[0].text.strip()
+            return email_text
+            
+        except Exception as e:
+            logger.error(f"Error generating follow-up email: {str(e)}")
+            raise Exception(f"Failed to generate follow-up email: {str(e)}")
+    
+    def analyze_cover_letter(self, cover_letter_text: str) -> Dict[str, Any]:
+        """
+        Analyze a cover letter and provide feedback
+        
+        Args:
+            cover_letter_text: Cover letter to analyze
+            
+        Returns:
+            Analysis with score and suggestions
+        """
+        
+        prompt = f"""Analyze this cover letter and provide constructive feedback:
+
+**Cover Letter:**
+{cover_letter_text}
+
+**Provide analysis in this format:**
+- Overall Score (1-10):
+- Strengths (2-3 points):
+- Areas for Improvement (2-3 points):
+- Tone Assessment:
+- Specific Suggestions:
+
+Be constructive and specific."""
+        
+        try:
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=1500,
+                temperature=0.5,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            
+            analysis_text = response.content[0].text.strip()
+            
+            # Parse the analysis (simplified version)
+            return {
+                "analysis": analysis_text,
+                "word_count": len(cover_letter_text.split())
+            }
+            
+        except Exception as e:
+            logger.error(f"Error analyzing cover letter: {str(e)}")
+            return {
+                "analysis": "Unable to analyze cover letter at this time.",
+                "word_count": len(cover_letter_text.split())
+            }
